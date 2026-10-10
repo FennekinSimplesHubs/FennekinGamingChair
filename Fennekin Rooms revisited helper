@@ -1,0 +1,395 @@
+local StarterGui = game:GetService("StarterGui")
+local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
+local CoreGui = game:GetService("CoreGui")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- Feature States
+local isDetectorEnabled = true
+local isFullbrightEnabled = false
+local isAutoInteractEnabled = false
+local isEspEnabled = false
+local isAntiA90Enabled = true
+local isTransparentLockerEnabled = true
+
+-- Entity List (Rooms: Revisited)
+local entityNames = {
+    "A-15", "A-20", "A-25", "A-60", "A-60b", "A-70", "A-85", "A-90", "A-90b", "A-110", "A-120", 
+    "A-123", "A-181", "A-200", "A-223", "A-275", "A-305", "A-330",
+    "A+15", "A+33", "A+60", "B-1", "B-225",
+    "D-5", "D-5i", "D-20", "D-60", "D-60i", "D-120", "D-140",
+    "I-45", "I-45i", "I-85", "I-155", "I-200",
+    "T-25", "T-144",
+    "Lurkmask", "Locker Mimic", "Samuel"
+}
+
+local entityLookup = {}
+for _, name in ipairs(entityNames) do
+    entityLookup[name:lower()] = true
+end
+
+-- Notification Function
+local function notify(title, text)
+    StarterGui:SetCore("SendNotification", {
+        Title = title,
+        Text = text,
+        Duration = 5
+    })
+end
+
+local function isEntity(child)
+    local childNameLower = child.Name:lower()
+    return entityLookup[childNameLower] or string.find(childNameLower, "entity") or string.find(childNameLower, "monster")
+end
+
+local function isA90(child)
+    local nameLower = child.Name:lower()
+    return string.find(nameLower, "a-90") or string.find(nameLower, "a90") or string.find(nameLower, "a+90")
+end
+
+-- Spawn, Despawn and Anti A-90 Detector
+Workspace.ChildAdded:Connect(function(child)
+    if isAntiA90Enabled and isA90(child) then
+        pcall(function()
+            child:Destroy()
+        end)
+        notify("🛡️ ANTI A-90", "A-90 / Variant blocked and deleted successfully!")
+        return
+    end
+
+    if isDetectorEnabled and isEntity(child) then
+        notify("⚠️ ENTITY DETECTED!", "The entity " .. child.Name .. " just spawned!")
+    end
+end)
+
+Workspace.ChildRemoved:Connect(function(child)
+    if isDetectorEnabled and isEntity(child) and not isA90(child) then
+        notify("✅ SAFE!", "The entity " .. child.Name .. " has despawned.")
+    end
+end)
+
+-- Fullbright Loop
+task.spawn(function()
+    while true do
+        if isFullbrightEnabled then
+            Lighting.Brightness = 2
+            Lighting.ClockTime = 14
+            Lighting.FogEnd = 100000
+            Lighting.GlobalShadows = false
+            Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+        end
+        task.wait(1)
+    end
+end)
+
+-- Auto-Interact Loop
+task.spawn(function()
+    while true do
+        if isAutoInteractEnabled and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            local hrp = LocalPlayer.Character.HumanoidRootPart
+            
+            for _, descendant in ipairs(Workspace:GetDescendants()) do
+                if descendant:IsA("ProximityPrompt") then
+                    local parent = descendant.Parent
+                    if parent and parent:IsA("BasePart") then
+                        local distance = (hrp.Position - parent.Position).Magnitude
+                        if distance <= 12 then
+                            fireproximityprompt(descendant)
+                        end
+                    end
+                end
+            end
+        end
+        task.wait(0.3)
+    end
+end)
+
+-- Local Locker Transparency System
+local currentLockerParts = {}
+
+local function resetLockerTransparency()
+    for part, originalVal in pairs(currentLockerParts) do
+        if part and part:IsA("BasePart") then
+            part.LocalTransparencyModifier = originalVal
+        end
+    end
+    table.clear(currentLockerParts)
+end
+
+RunService.RenderStepped:Connect(function()
+    if not isTransparentLockerEnabled then
+        if next(currentLockerParts) ~= nil then
+            resetLockerTransparency()
+        end
+        return
+    end
+
+    local character = LocalPlayer.Character
+    if not character then
+        resetLockerTransparency()
+        return
+    end
+
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+        resetLockerTransparency()
+        return
+    end
+
+    local foundLockerModel = nil
+    local minDistance = 6
+
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") then
+            local nameLower = obj.Name:lower()
+            if string.find(nameLower, "locker") or string.find(nameLower, "cabinet") or string.find(nameLower, "closet") or string.find(nameLower, "armario") then
+                local pivot = obj:GetPivot().Position
+                local dist = (hrp.Position - pivot).Magnitude
+                if dist < minDistance then
+                    minDistance = dist
+                    foundLockerModel = obj
+                end
+            end
+        end
+    end
+
+    if foundLockerModel then
+        for _, descendant in ipairs(foundLockerModel:GetDescendants()) do
+            if descendant:IsA("BasePart") and descendant.Name ~= "HumanoidRootPart" then
+                if currentLockerParts[descendant] == nil then
+                    currentLockerParts[descendant] = descendant.LocalTransparencyModifier
+                end
+                descendant.LocalTransparencyModifier = 0.8
+            end
+        end
+    else
+        if next(currentLockerParts) ~= nil then
+            resetLockerTransparency()
+        end
+    end
+end)
+
+-- ESP System
+local espFolder = Instance.new("Folder")
+espFolder.Name = "RoomsESPFolder"
+espFolder.Parent = CoreGui
+
+local activeHighlights = {}
+
+local function clearESP()
+    espFolder:ClearAllChildren()
+    table.clear(activeHighlights)
+end
+
+local function applyHighlight(target, color, fillAlpha)
+    if not target then return end
+    
+    if activeHighlights[target] and activeHighlights[target].Parent then
+        activeHighlights[target].FillColor = color
+        return
+    end
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "ESPHighlight"
+    highlight.Adornee = target
+    highlight.FillColor = color
+    highlight.FillTransparency = fillAlpha or 0.5
+    highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+    highlight.OutlineTransparency = 0.2
+    highlight.Parent = espFolder
+    
+    activeHighlights[target] = highlight
+
+    target.AncestryChanged:Connect(function(_, parent)
+        if not parent and activeHighlights[target] then
+            activeHighlights[target]:Destroy()
+            activeHighlights[target] = nil
+        end
+    end)
+end
+
+local function updateESP()
+    if not isEspEnabled then return end
+
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") or obj:IsA("BasePart") then
+            local nameLower = obj.Name:lower()
+            
+            -- Doors (Blue)
+            if string.find(nameLower, "door") or string.find(nameLower, "porta") or string.find(nameLower, "gateway") then
+                applyHighlight(obj, Color3.fromRGB(0, 150, 255), 0.6)
+            
+            -- Lockers / Cabinets
+            elseif string.find(nameLower, "locker") or string.find(nameLower, "cabinet") or string.find(nameLower, "closet") or string.find(nameLower, "armario") then
+                local hasEntityInside = false
+                for _, child in ipairs(obj:GetDescendants()) do
+                    if isEntity(child) or string.find(child.Name:lower(), "mimic") or string.find(child.Name:lower(), "hide") or string.find(child.Name:lower(), "entity") then
+                        hasEntityInside = true
+                        break
+                    end
+                end
+                
+                if hasEntityInside then
+                    applyHighlight(obj, Color3.fromRGB(255, 0, 0), 0.2) -- Red (Danger)
+                else
+                    applyHighlight(obj, Color3.fromRGB(0, 255, 100), 0.5) -- Green (Safe)
+                end
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    while true do
+        if isEspEnabled then
+            updateESP()
+        end
+        task.wait(1)
+    end
+end)
+
+-- GUI CREATION
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "RoomsDetectorGui"
+screenGui.ResetOnSpawn = false
+
+pcall(function()
+    screenGui.Parent = CoreGui
+end)
+if not screenGui.Parent then
+    screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- Hide/Show GUI Button (Top-Left Corner)
+local hideGuiBtn = Instance.new("TextButton")
+hideGuiBtn.Size = UDim2.new(0, 100, 0, 30)
+hideGuiBtn.Position = UDim2.new(0, 10, 0, 10)
+hideGuiBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+hideGuiBtn.Text = "Hide GUI"
+hideGuiBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+hideGuiBtn.TextSize = 12
+hideGuiBtn.Font = Enum.Font.SourceSansBold
+hideGuiBtn.Parent = screenGui
+
+local hideCorner = Instance.new("UICorner")
+hideCorner.CornerRadius = UDim.new(0, 6)
+hideCorner.Parent = hideGuiBtn
+
+-- Main Frame
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 220, 0, 335)
+mainFrame.Position = UDim2.new(0.05, 0, 0.2, 0)
+mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = screenGui
+
+hideGuiBtn.MouseButton1Click:Connect(function()
+    mainFrame.Visible = not mainFrame.Visible
+    hideGuiBtn.Text = mainFrame.Visible and "Hide GUI" or "Show GUI"
+end)
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 8)
+corner.Parent = mainFrame
+
+-- Title
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, 0, 0, 22)
+titleLabel.Position = UDim2.new(0, 0, 0, 5)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "Rooms Revisited Helper"
+titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLabel.TextSize = 14
+titleLabel.Font = Enum.Font.SourceSansBold
+titleLabel.Parent = mainFrame
+
+-- Subtitle (Fennekin Simples Hubs)
+local subtitleLabel = Instance.new("TextLabel")
+subtitleLabel.Size = UDim2.new(1, 0, 0, 18)
+subtitleLabel.Position = UDim2.new(0, 0, 0, 25)
+subtitleLabel.BackgroundTransparency = 1
+subtitleLabel.Text = "Fennekin Simples Hubs"
+subtitleLabel.TextColor3 = Color3.fromRGB(200, 150, 255)
+subtitleLabel.TextSize = 11
+subtitleLabel.Font = Enum.Font.SourceSansItalic
+subtitleLabel.Parent = mainFrame
+
+local function createButton(text, positionY, initialStatus)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0.85, 0, 0, 32)
+    btn.Position = UDim2.new(0.075, 0, positionY, 0)
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextSize = 12
+    btn.Font = Enum.Font.SourceSansBold
+    btn.Parent = mainFrame
+
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0, 6)
+    btnCorner.Parent = btn
+
+    if initialStatus then
+        btn.Text = text .. ": ENABLED"
+        btn.BackgroundColor3 = Color3.fromRGB(46, 204, 113)
+    else
+        btn.Text = text .. ": DISABLED"
+        btn.BackgroundColor3 = Color3.fromRGB(231, 76, 60)
+    end
+
+    return btn
+end
+
+-- GUI Buttons (Translated to English)
+local detectorBtn = createButton("Detector", 0.14, isDetectorEnabled)
+detectorBtn.MouseButton1Click:Connect(function()
+    isDetectorEnabled = not isDetectorEnabled
+    detectorBtn.Text = "Detector: " .. (isDetectorEnabled and "ENABLED" or "DISABLED")
+    detectorBtn.BackgroundColor3 = isDetectorEnabled and Color3.fromRGB(46, 204, 113) or Color3.fromRGB(231, 76, 60)
+end)
+
+local antiA90Btn = createButton("Anti A-90", 0.27, isAntiA90Enabled)
+antiA90Btn.MouseButton1Click:Connect(function()
+    isAntiA90Enabled = not isAntiA90Enabled
+    antiA90Btn.Text = "Anti A-90: " .. (isAntiA90Enabled and "ENABLED" or "DISABLED")
+    antiA90Btn.BackgroundColor3 = isAntiA90Enabled and Color3.fromRGB(46, 204, 113) or Color3.fromRGB(231, 76, 60)
+end)
+
+local brightBtn = createButton("Fullbright", 0.40, isFullbrightEnabled)
+brightBtn.MouseButton1Click:Connect(function()
+    isFullbrightEnabled = not isFullbrightEnabled
+    brightBtn.Text = "Fullbright: " .. (isFullbrightEnabled and "ENABLED" or "DISABLED")
+    brightBtn.BackgroundColor3 = isFullbrightEnabled and Color3.fromRGB(46, 204, 113) or Color3.fromRGB(231, 76, 60)
+end)
+
+local autoBtn = createButton("Auto Interact", 0.53, isAutoInteractEnabled)
+autoBtn.MouseButton1Click:Connect(function()
+    isAutoInteractEnabled = not isAutoInteractEnabled
+    autoBtn.Text = "Auto Interact: " .. (isAutoInteractEnabled and "ENABLED" or "DISABLED")
+    autoBtn.BackgroundColor3 = isAutoInteractEnabled and Color3.fromRGB(46, 204, 113) or Color3.fromRGB(231, 76, 60)
+end)
+
+local espBtn = createButton("ESP (Doors/Lockers)", 0.66, isEspEnabled)
+espBtn.MouseButton1Click:Connect(function()
+    isEspEnabled = not isEspEnabled
+    espBtn.Text = "ESP: " .. (isEspEnabled and "ENABLED" or "DISABLED")
+    espBtn.BackgroundColor3 = isEspEnabled and Color3.fromRGB(46, 204, 113) or Color3.fromRGB(231, 76, 60)
+    if isEspEnabled then
+        updateESP()
+    else
+        clearESP()
+    end
+end)
+
+local lockerTransBtn = createButton("Transparent Locker", 0.79, isTransparentLockerEnabled)
+lockerTransBtn.MouseButton1Click:Connect(function()
+    isTransparentLockerEnabled = not isTransparentLockerEnabled
+    lockerTransBtn.Text = "Transparent Locker: " .. (isTransparentLockerEnabled and "ENABLED" or "DISABLED")
+    lockerTransBtn.BackgroundColor3 = isTransparentLockerEnabled and Color3.fromRGB(46, 204, 113) or Color3.fromRGB(231, 76, 60)
+    if not isTransparentLockerEnabled then
+        resetLockerTransparency()
+    end
+end)
